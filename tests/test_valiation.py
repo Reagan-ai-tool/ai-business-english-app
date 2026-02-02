@@ -10,5 +10,5 @@ def test_too_short():
 
 def test_valid_text():
     ok, cleaned = validate_user_input("Please review the attached proposal and share your feedback.")
-    assert ok is False
+    assert ok is True
     assert isinstance(cleaned, str)
