@@ -11,7 +11,7 @@ from typing import Tuple, Dict
 
 import requests
 import streamlit as st
-
+import time
 
 # =========================
 # 1) Logging (simple)
@@ -212,8 +212,10 @@ if clicked:
                 prompt = build_business_prompt(cleaned_or_msg, mode)
 
                 with st.spinner("Generating..."):
+                    start = time.time()
                     final_text = call_openai_api(prompt)
-
+                elapsed = round(time.time() - start, 2)
+                st.caption(f"time={elapsed}s")
                 status.success("Done.")
                 st.markdown(final_text)
 
