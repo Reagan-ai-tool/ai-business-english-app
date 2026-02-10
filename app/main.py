@@ -2,16 +2,16 @@
 # 0) Imports
 # =========================
 import os
-import time
-import logging
-import requests 
 import re
-import streamlit as st
-
+import logging
 from app.validation import validate_user_input
 from app.prompting import build_business_prompt
+from app.client import call_openai_api
+from typing import Tuple, Dict
 
-API_URL =os.getenv("API_URL", "http://127.0.0.1:8000/rewrite")
+import requests
+import streamlit as st
+import time
 
 # =========================
 # 1) Logging (simple)
@@ -69,9 +69,108 @@ def normalize_text(text: str) -> str:
     return text
 
 
+# =========================
+# 5) Validation layer
+# =========================
+def validate_user_input(raw_text: str) -> Tuple[bool, str]:
+    text = normalize_text(raw_text).strip()
+
+    if not text:
+        return False, "Input cannot be empty."
+
+    if len(text) < MIN_LENGTH:
+        return False, f"Too short. Please enter at least {MIN_LENGTH} characters."
+
+    if len(text) > MAX_LENGTH:
+        return False, f"Too long. Please keep it under {MAX_LENGTH} characters."
+
+    if not ALLOWED_PATTERN.match(text):
+        return False, "Only English letters and basic punctuation are allowed. No emojis or special symbols."
+
+    words = re.findall(r"[A-Za-z']+", text.lower())
+    if len(words) < 5:
+        return False, "Please enter a meaningful sentence (at least 5 words)."
+
+    has_verb = any(w in COMMON_VERBS for w in words)
+    if not has_verb:
+        return False, "Please include at least one verb (e.g., is/are, will, review, share)."
+
+    counts: Dict[str, int] = {}
+    for w in words:
+        counts[w] = counts.get(w, 0) + 1
+    max_repeat = max(counts.values())
+    repeat_ratio = max_repeat / len(words)
+    if repeat_ratio > REPEAT_RATIO_THRESHOLD:
+        return False, "Too many repeated words. Please rewrite your sentence."
+
+    return True, text  # ✅ cleaned text returned
+
 
 # =========================
-# 5) UI layer
+# 6) Prompt builder
+# =========================
+def build_business_prompt(user_text: str, mode: str) -> str:
+    if mode == "Correct + 3 paragraphs":
+        return f"""
+You are a professional business English editor and communication consultant.
+
+Task:
+1) Correct grammar and wording.
+2) Output EXACTLY three short paragraphs (no extra blank lines).
+3) Keep the tone polite, confident, and manager-ready.
+4) Do NOT add emojis.
+5) Do NOT add extra headings.
+
+User text:
+{user_text}
+""".strip()
+
+    # Example: other mode
+    return f"""
+You are a professional business English editor.
+
+Task:
+- Rewrite the text in a concise, polite, manager-ready style.
+- Keep it as ONE paragraph.
+- No emojis, no headings.
+
+User text:
+{user_text}
+""".strip()
+
+
+# =========================
+# 7) API client layer
+# =========================
+def call_openai_api(prompt: str) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}",
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+    }
+
+    logger.info("Calling OpenAI API...")
+    response = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT_SECONDS)
+
+    if response.status_code != 200:
+        # Return readable error for debugging
+        raise requests.RequestException(f"HTTP {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    if "choices" not in result or not result["choices"]:
+        raise ValueError(f"Unexpected API response (no choices): {result}")
+
+    return result["choices"][0]["message"]["content"]
+
+
+# =========================
+# 8) UI layer
 # =========================
 st.title("Business English Sentence Optimizer")
 
@@ -114,14 +213,7 @@ if clicked:
 
                 with st.spinner("Generating..."):
                     start = time.time()
-                    resp = requests.post(
-                    API_URL,
-                    json={"text": cleaned_or_msg, "mode": mode},
-                    timeout=30,
-                    )
-                    resp.raise_for_status()
-                    final_text = resp.json()["result"]
-
+                    final_text = call_openai_api(prompt)
                 elapsed = round(time.time() - start, 2)
                 st.caption(f"time={elapsed}s")
                 status.success("Done.")
@@ -131,7 +223,7 @@ if clicked:
             status.error("Request timed out. Try a shorter input or try again.")
 
         except Exception as e:
-            status.error(f"Error: {e}")
+            status.error(f"Error: {e}")F
             logger.exception("Unexpected error")
 
         finally:
